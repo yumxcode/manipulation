@@ -1,4 +1,6 @@
-# 机械臂/采集电脑（Ubuntu 22.04，Python 3.10/3.11）
+# 机械臂/采集电脑（Ubuntu 22.04，Python 3.10+）。
+# 推荐直接用打包安装（等价）：pip install -e ".[robot]"
+# 本文件仅为不想装包时的平铺清单。
 numpy
 scipy
 pyyaml

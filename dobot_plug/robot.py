@@ -20,7 +20,7 @@ import logging
 import re
 import threading
 import time
-from typing import Sequence
+from collections.abc import Sequence
 
 import numpy as np
 from scipy.spatial.transform import Rotation

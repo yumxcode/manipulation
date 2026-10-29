@@ -94,8 +94,17 @@ class EpisodeWriter:
     def save(self, success: bool, notes: str = "") -> pathlib.Path:
         self.images.flush()
         self.images.close()
-        np.savez_compressed(self.dir / "lowdim.npz", **{k: np.stack(v) for k, v in self.buf.items()})
-        self.meta.update(success=bool(success), num_frames=self.n, notes=notes)
+        lowdim = {k: np.stack(v) for k, v in self.buf.items()}
+        np.savez_compressed(self.dir / "lowdim.npz", **lowdim)
+        # 实测帧率/时长（质量控制用：帧时间戳由记录循环的实际节拍决定，
+        # 若实测 fps 明显低于标称 fps，数据集标称的 fps 不可信）
+        t = np.asarray(lowdim["t"], dtype=np.float64)
+        dur = float(t[-1] - t[0]) if len(t) > 1 else 0.0
+        fps_measured = round((len(t) - 1) / dur, 2) if dur > 0 else float(self.meta["fps"])
+        self.meta.update(
+            success=bool(success), num_frames=self.n, notes=notes,
+            duration_s=round(dur, 2), fps_measured=fps_measured,
+        )
         (self.dir / "meta.json").write_text(json.dumps(self.meta, ensure_ascii=False, indent=2))
         return self.dir
 

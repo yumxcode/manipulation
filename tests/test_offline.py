@@ -21,8 +21,9 @@ sys.path.insert(0, str(ROOT))
 from dobot_plug.config import load_config  # noqa: E402
 from dobot_plug.episode_io import Episode, EpisodeWriter, list_episodes  # noqa: E402
 from dobot_plug.features import action_to_command, build_action, build_state, policy_observation  # noqa: E402
-from dobot_plug.recap import Bins, n_step_advantage, normalized_returns  # noqa: E402
+from dobot_plug.recap import Bins, n_step_advantage, normalized_returns, positive_threshold  # noqa: E402
 from dobot_plug.robot import CR5AF, RobotState, ServoThread, parse_response  # noqa: E402
+from dobot_plug.stats import wilson_ci  # noqa: E402
 
 CFG = load_config()
 
@@ -67,9 +68,22 @@ def test_episode_io():
         assert len(list_episodes(d, ["unplug"])) == 0
 
 
+def test_episode_io_cadence_meta():
+    """save() 应写入实测 fps 与时长（数据质检用）。"""
+    with tempfile.TemporaryDirectory() as d:
+        w = EpisodeWriter(d, "insert", "insert the plug", 15, ["base"], source="demo")
+        t0 = 1000.0
+        for i in range(31):  # 30 帧间隔 * 1/15s => 实测 15Hz
+            w.add({"base": np.zeros((8, 8, 3), np.uint8)}, t=t0 + i / 15.0, q_deg=np.zeros(6),
+                  q_target_deg=np.zeros(6), tcp_pose=np.zeros(6), ft=np.zeros(6), gripper_pos=0.0,
+                  action_q_deg=np.zeros(6), action_gripper=0.0, intervention=0, hold=0)
+        ep = Episode(w.save(success=True))
+        assert abs(ep.meta["duration_s"] - 2.0) < 0.01
+        assert abs(ep.meta["fps_measured"] - 15.0) < 0.1
+
+
 def test_convert_keep_mask():
-    sys.path.insert(0, str(ROOT / "scripts"))
-    from convert_to_lerobot import keep_mask
+    from dobot_plug.apps.convert_to_lerobot import keep_mask
 
     n = 20
     aq = np.zeros((n, 6))
@@ -186,6 +200,29 @@ def test_recap_math():
     b = Bins(201)
     th = b.two_hot(np.array([-1.0, -0.5, -0.123, 0.0]))
     assert np.allclose(th.sum(1), 1) and np.allclose(b.expectation(th), [-1.0, -0.5, -0.123, 0.0], atol=1e-6)
+
+
+def test_positive_threshold():
+    """论文（arXiv:2511.14759）：ε_ℓ 取优势值的 30% 分位数 => 约 70% 帧为 positive。"""
+    rng = np.random.default_rng(0)
+    adv = rng.normal(0, 1, 100_000)
+    eps = positive_threshold(adv, positive_fraction=0.7)
+    frac = float(np.mean(adv > eps))
+    assert abs(frac - 0.7) < 0.01, frac
+    # 旧默认（30% positive）现在必须显式传参
+    assert abs(float(np.mean(adv > positive_threshold(adv, 0.3))) - 0.3) < 0.01
+    assert positive_threshold(np.array([]), 0.7) == 0.0
+
+
+def test_wilson_ci():
+    lo, hi = wilson_ci(0, 0)
+    assert (lo, hi) == (0.0, 0.0)
+    lo, hi = wilson_ci(10, 10)
+    assert lo > 0.7 and hi <= 1.0  # 10/10 的下界约 0.74
+    lo, hi = wilson_ci(0, 10)
+    assert lo == 0.0 and hi < 0.35
+    lo, hi = wilson_ci(5, 10)
+    assert lo < 0.5 < hi  # 5/10 区间约 [0.24, 0.76]
 
 
 def test_openpi_transforms_with_stubs():

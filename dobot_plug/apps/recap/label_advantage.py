@@ -1,14 +1,16 @@
 """RECAP 第 2 步：用价值模型给每一帧算 N 步优势并二值化，写入各回合目录的 advantage.npz。
 
-    python scripts/recap/label_advantage.py --value checkpoints/value/v1/best.pt
+    dobot-recap-label-advantage --value checkpoints/value/v1/best.pt
     # 然后转换数据集（在 openpi 环境中）:
     uv run python ~/dobot_plug/scripts/convert_to_lerobot.py --repo-id local/dobot_plug_recap \\
         --sources demo rollout --include-failures --with-advantage
 
 参数说明:
     --n-step            N 步优势的 N（帧）。15Hz 下 15~45 比较合适，默认 30（2 秒）
-    --positive-fraction 每个任务取阈值使约这么多比例的自主帧被标为 positive（π*0.6 约 30%）
-    --demos-positive    示范帧全部强制 positive（默认否：示范也按优势打分，慢/犹豫的片段会被标 negative）
+    --positive-fraction 每个任务取阈值 ε_ℓ 使约这么多比例的自主帧被标为 positive。
+                        论文（arXiv:2511.14759）取优势值的 30% 分位数 => 默认 0.7
+    --score-demos       示范帧也按优势打分（默认否：论文中示范阶段 I_t 全部为 True，
+                        慢/犹豫的示范片段不会被标 negative）
 人工接管帧（intervention=1 且 source=rollout）始终强制为 positive。
 """
 
@@ -16,19 +18,15 @@ from __future__ import annotations
 
 import argparse
 import pathlib
-import sys
 
 import numpy as np
 import torch
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-
-from dobot_plug.config import load_config  # noqa: E402
-from dobot_plug.episode_io import list_episodes  # noqa: E402
-from dobot_plug.features import build_state  # noqa: E402
-from dobot_plug.recap import n_step_advantage, normalized_returns  # noqa: E402
-from train_value import MEAN, STD, ValueNet, pad_resize  # noqa: E402
+from dobot_plug.apps.recap.train_value import MEAN, STD, ValueNet, pad_resize
+from dobot_plug.config import load_config
+from dobot_plug.episode_io import list_episodes
+from dobot_plug.features import build_state
+from dobot_plug.recap import n_step_advantage, normalized_returns, positive_threshold
 
 
 @torch.no_grad()
@@ -57,8 +55,10 @@ def main():
     ap.add_argument("--value", required=True, help="train_value.py 输出的 best.pt")
     ap.add_argument("--sources", nargs="*", default=["demo", "rollout"])
     ap.add_argument("--n-step", type=int, default=30)
-    ap.add_argument("--positive-fraction", type=float, default=0.3)
-    ap.add_argument("--demos-positive", action="store_true")
+    ap.add_argument("--positive-fraction", type=float, default=0.7,
+                    help="阈值 ε_ℓ 取 (1 - 该值) 分位数；论文取 30%% 分位数 => 0.7")
+    ap.add_argument("--score-demos", action="store_true",
+                    help="示范帧也按优势打分（默认示范帧全部 positive，与论文 SFT 阶段一致）")
     ap.add_argument("--reuse-values", action="store_true", help="已有 value.npz 时不重新推理")
     args = ap.parse_args()
 
@@ -87,7 +87,7 @@ def main():
         forced = np.zeros(len(ep), dtype=bool)
         if ep.meta["source"] == "rollout":
             forced |= ep.lowdim["intervention"].astype(bool)
-        elif args.demos_positive:
+        elif not args.score_demos:
             forced[:] = True
         per_ep.append((ep, adv, forced))
         print(f"[{k + 1}/{len(eps)}] {ep.dir.name} {'成功' if ep.success else '失败'} "
@@ -99,7 +99,7 @@ def main():
         a = np.concatenate([adv[~forced] for ep, adv, forced in per_ep if ep.meta["task_key"] == task] or [np.zeros(0)])
         if len(a) == 0:
             continue
-        thresholds[task] = float(np.quantile(a, 1.0 - args.positive_fraction))
+        thresholds[task] = positive_threshold(a, args.positive_fraction)
     print("阈值 ε:", {k: round(v, 4) for k, v in thresholds.items()})
 
     # 3) 写入

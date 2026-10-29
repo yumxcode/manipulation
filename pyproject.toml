@@ -1,0 +1,69 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dobot-plug"
+version = "0.2.0"
+description = "π0.5 + RECAP VLA pipeline for Dobot CR5AF plug/socket insertion: data collection, training (openpi), deployment & evaluation"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "dobot_plug contributors" }]
+keywords = ["robotics", "vla", "pi0", "openpi", "lerobot", "dobot", "recap"]
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "pyyaml>=6.0",
+    "pillow>=10.0",
+]
+
+[project.optional-dependencies]
+# 机械臂/采集电脑全量环境（不用 extras 时只有纯逻辑，可直接在 GPU 机上做数据转换）
+robot = [
+    "pyrealsense2>=2.54",
+    "pyspacemouse>=1.1",
+    "minimalmodbus>=2.1",
+    "dobot_sdk @ git+https://github.com/Dobot-Arm/TCP-IP-Python-V4.git",
+]
+# RECAP 价值模型训练（也可直接装进 openpi 的 uv 环境：uv pip install torchvision）
+recap = [
+    "torch>=2.2",
+    "torchvision>=0.17",
+]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+dobot-check-hardware = "dobot_plug.apps.check_hardware:main"
+dobot-record = "dobot_plug.apps.record:main"
+dobot-run-policy = "dobot_plug.apps.run_policy:main"
+dobot-eval = "dobot_plug.apps.eval:main"
+dobot-inspect-data = "dobot_plug.apps.inspect_data:main"
+dobot-convert-to-lerobot = "dobot_plug.apps.convert_to_lerobot:main"
+dobot-recap-train-value = "dobot_plug.apps.recap.train_value:main"
+dobot-recap-label-advantage = "dobot_plug.apps.recap.label_advantage:main"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["dobot_plug"]
+
+[tool.hatch.build.targets.sdist]
+include = ["dobot_plug", "scripts", "configs", "tests", "docs", "README.md", "LICENSE"]
+
+[tool.ruff]
+line-length = 140
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["B008", "UP015"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

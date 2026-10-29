@@ -1,0 +1,24 @@
+# 数据与产物
+data/
+evals/
+checkpoints/
+assets/
+*.pt
+*.npz
+
+# Python
+__pycache__/
+*.pyc
+.venv*/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# 编辑器/系统
+.DS_Store
+.idea/
+.vscode/
+.meta-agent/
+tmp/

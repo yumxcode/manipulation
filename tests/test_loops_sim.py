@@ -97,7 +97,7 @@ def make_cfg(tmp: pathlib.Path) -> pathlib.Path:
 
 
 def test_record(cfg_path, raw):
-    import record
+    from dobot_plug.apps import record
 
     record.KeyReader = ScriptedKeys
     set_ax = lambda v: (lambda: setattr(FakeMouse, "axes", np.array(v, float)))  # noqa: E731
@@ -165,7 +165,7 @@ def install_fake_openpi_client(fake_ctl):
 
 def test_run_policy(cfg_path, raw, fake_ctl):
     calls = install_fake_openpi_client(fake_ctl)
-    import run_policy
+    from dobot_plug.apps import run_policy
 
     run_policy.KeyReader = ScriptedKeys
     j1 = {}

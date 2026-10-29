@@ -1,5 +1,7 @@
 # RECAP 价值模型（GPU 机器）。可以直接装进 openpi 的 uv 环境：
 #   cd <openpi> && uv pip install torchvision
+# 或在项目根：pip install -e ".[recap]"
+# 入口：dobot-recap-train-value / dobot-recap-label-advantage
 torch
 torchvision
 numpy

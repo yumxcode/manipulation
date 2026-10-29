@@ -5,9 +5,9 @@
     resnet18（torchvision 预训练，默认）| dinov2_vits14（torch.hub，泛化更好，需联网下载权重）
 
 用法:
-    python scripts/recap/train_value.py --out checkpoints/value/v1
+    dobot-recap-train-value --out checkpoints/value/v1
     # 只用部分数据源 / 任务
-    python scripts/recap/train_value.py --sources demo rollout --tasks insert --out ...
+    dobot-recap-train-value --sources demo rollout --tasks insert --out ...
 
 注意：价值模型需要同时看到成功和失败的回合，否则学不出“离失败有多近”。
 """
@@ -18,7 +18,6 @@ import argparse
 import json
 import pathlib
 import random
-import sys
 
 import numpy as np
 import torch
@@ -26,12 +25,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
-
-from dobot_plug.config import load_config  # noqa: E402
-from dobot_plug.episode_io import Episode, list_episodes  # noqa: E402
-from dobot_plug.features import build_state  # noqa: E402
-from dobot_plug.recap import Bins, normalized_returns  # noqa: E402
+from dobot_plug.config import load_config
+from dobot_plug.episode_io import Episode, list_episodes
+from dobot_plug.features import build_state
+from dobot_plug.recap import Bins, normalized_returns
 
 IMG = 224
 MEAN = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
@@ -161,7 +158,8 @@ def main():
     tr_eps = [eps[i] for i in perm[n_val:]]
 
     tr = FrameDataset(tr_eps, cams, tasks, cfg, include_ft, augment=True)
-    dl = DataLoader(tr, batch_size=args.batch_size, shuffle=True, num_workers=args.workers, drop_last=True, persistent_workers=args.workers > 0)
+    dl = DataLoader(tr, batch_size=args.batch_size, shuffle=True, num_workers=args.workers,
+                    drop_last=True, persistent_workers=args.workers > 0)
     va = FrameDataset(val_eps, cams, tasks, cfg, include_ft, tr.state_mean, tr.state_std) if val_eps else None
     dl_va = DataLoader(va, batch_size=args.batch_size, num_workers=args.workers) if va else None
 
