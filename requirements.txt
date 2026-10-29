@@ -1,0 +1,12 @@
+# 机械臂/采集电脑（Ubuntu 22.04，Python 3.10/3.11）
+numpy
+scipy
+pyyaml
+pillow
+pyrealsense2              # Intel RealSense SDK Python 绑定
+pyspacemouse              # 3D 鼠标；另需 sudo apt install libhidapi-dev 并配置 udev 权限
+minimalmodbus             # 大寰夹爪 Modbus-RTU（gripper.type=dh_modbus 时）
+# 越疆官方 V4 TCP/IP Python SDK（支持 CRAF 系列）
+dobot_sdk @ git+https://github.com/Dobot-Arm/TCP-IP-Python-V4.git
+# openpi 客户端（websocket 连接策略服务器），从 openpi 仓库本地安装：
+#   pip install -e <openpi>/packages/openpi-client

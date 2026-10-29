@@ -1,0 +1,267 @@
+diff --git a/src/openpi/policies/dobot_policy.py b/src/openpi/policies/dobot_policy.py
+new file mode 100644
+index 0000000..5e49c2b
+--- /dev/null
++++ b/src/openpi/policies/dobot_policy.py
+@@ -0,0 +1,105 @@
++"""越疆 CR5AF 单臂 + 平行夹爪（插头插拔）的 openpi 输入/输出变换。
++
++客户端（dobot_plug/scripts/run_policy.py）发送的 observation 键：
++    observation/base_0_rgb, observation/left_wrist_0_rgb, [observation/right_wrist_0_rgb]
++    observation/state   (7 或 13 维: q(6,rad) + gripper(1) [+ F/T(6)])
++    prompt
++训练时由 LeRobot 数据集经 RepackTransform 映射到相同的键。
++
++RECAP（π*0.6 风格的优势条件化）:
++    训练数据多一个 "advantage" 字段 (1.0=positive / 0.0=negative)，
++    AdvantagePrompt 会把 "\\nAdvantage: positive|negative" 追加到 prompt 末尾，并以一定概率丢弃
++    （使模型同时学会无条件策略，可做 CFG）。
++    推理时客户端直接在 prompt 末尾带上 "\\nAdvantage: positive"，不发送 advantage 字段，此变换为 no-op。
++"""
++
++import dataclasses
++import random
++
++import einops
++import numpy as np
++
++from openpi import transforms
++from openpi.models import model as _model
++
++IMAGE_SLOTS = ("base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb")
++ACTION_DIM = 7
++RECAP_POS = "\nAdvantage: positive"
++RECAP_NEG = "\nAdvantage: negative"
++
++
++def make_dobot_example(state_dim: int = 13) -> dict:
++    return {
++        "observation/base_0_rgb": np.random.randint(256, size=(240, 320, 3), dtype=np.uint8),
++        "observation/left_wrist_0_rgb": np.random.randint(256, size=(240, 320, 3), dtype=np.uint8),
++        "observation/right_wrist_0_rgb": np.random.randint(256, size=(240, 320, 3), dtype=np.uint8),
++        "observation/state": np.random.rand(state_dim).astype(np.float32),
++        "prompt": "insert the plug into the socket",
++    }
++
++
++def _parse_image(image) -> np.ndarray:
++    image = np.asarray(image)
++    if np.issubdtype(image.dtype, np.floating):
++        image = (255 * image).astype(np.uint8)
++    if image.shape[0] == 3:
++        image = einops.rearrange(image, "c h w -> h w c")
++    return image
++
++
++@dataclasses.dataclass(frozen=True)
++class DobotInputs(transforms.DataTransformFn):
++    model_type: _model.ModelType
++
++    def __call__(self, data: dict) -> dict:
++        images, masks = {}, {}
++        ref = None
++        for slot in IMAGE_SLOTS:
++            key = f"observation/{slot}"
++            if key in data:
++                images[slot] = _parse_image(data[key])
++                masks[slot] = np.True_
++                ref = images[slot] if ref is None else ref
++        if ref is None:
++            raise ValueError("observation 中没有任何图像")
++        for slot in IMAGE_SLOTS:
++            if slot not in images:
++                images[slot] = np.zeros_like(ref)
++                # pi0/pi05 对补零的图像槽位做 mask；pi0-FAST 不 mask
++                masks[slot] = np.True_ if self.model_type == _model.ModelType.PI0_FAST else np.False_
++
++        inputs = {"state": np.asarray(data["observation/state"], dtype=np.float32), "image": images, "image_mask": masks}
++        if "actions" in data:
++            inputs["actions"] = data["actions"]
++        if "prompt" in data:
++            inputs["prompt"] = data["prompt"]
++        if "advantage" in data:
++            inputs["advantage"] = data["advantage"]
++        return inputs
++
++
++@dataclasses.dataclass(frozen=True)
++class AdvantagePrompt(transforms.DataTransformFn):
++    """RECAP：把二值优势指示写进语言指令。只在数据里存在 "advantage" 字段（即训练）时生效。"""
++
++    dropout: float = 0.3
++
++    def __call__(self, data: dict) -> dict:
++        if "advantage" not in data:
++            return data
++        data = dict(data)
++        adv = float(np.asarray(data.pop("advantage")).reshape(-1)[0])
++        prompt = data.get("prompt", "")
++        if isinstance(prompt, bytes):
++            prompt = prompt.decode()
++        prompt = str(prompt)
++        if random.random() >= self.dropout:
++            prompt = prompt + (RECAP_POS if adv >= 0.5 else RECAP_NEG)
++        data["prompt"] = prompt
++        return data
++
++
++@dataclasses.dataclass(frozen=True)
++class DobotOutputs(transforms.DataTransformFn):
++    def __call__(self, data: dict) -> dict:
++        return {"actions": np.asarray(data["actions"][..., :ACTION_DIM])}
+diff --git a/src/openpi/training/config.py b/src/openpi/training/config.py
+index 4ca47e1..fb8fb32 100644
+--- a/src/openpi/training/config.py
++++ b/src/openpi/training/config.py
+@@ -5,6 +5,7 @@ from collections.abc import Sequence
+ import dataclasses
+ import difflib
+ import logging
++import os
+ import pathlib
+ from typing import Any, Literal, Protocol, TypeAlias
+ 
+@@ -18,6 +19,7 @@ import openpi.models.pi0_config as pi0_config
+ import openpi.models.pi0_fast as pi0_fast
+ import openpi.models.tokenizer as _tokenizer
+ import openpi.policies.aloha_policy as aloha_policy
++import openpi.policies.dobot_policy as dobot_policy
+ import openpi.policies.droid_policy as droid_policy
+ import openpi.policies.libero_policy as libero_policy
+ import openpi.shared.download as _download
+@@ -355,6 +357,47 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
+         )
+ 
+ 
++@dataclasses.dataclass(frozen=True)
++class LeRobotDobotDataConfig(DataConfigFactory):
++    """越疆 CR5AF 单臂插头插拔（数据由 dobot_plug/scripts/convert_to_lerobot.py 生成）。
++
++    数据集字段: base_0_rgb / left_wrist_0_rgb / [right_wrist_0_rgb], state, actions, [advantage]
++    actions = 绝对目标关节角(6, rad) + 夹爪(1)；这里转成相对当前关节角的增量（夹爪保持绝对）。
++    """
++
++    # 数据集中实际存在的图像槽位（只有两台相机时去掉 right_wrist_0_rgb）
++    image_slots: tuple[str, ...] = dobot_policy.IMAGE_SLOTS
++    # RECAP：数据集带 advantage 字段，并把优势指示写进 prompt
++    recap: bool = False
++    recap_dropout: float = 0.3
++
++    @override
++    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
++        mapping = {f"observation/{slot}": slot for slot in self.image_slots}
++        mapping.update({"observation/state": "state", "actions": "actions", "prompt": "prompt"})
++        if self.recap:
++            mapping["advantage"] = "advantage"
++        repack_transform = _transforms.Group(inputs=[_transforms.RepackTransform(mapping)])
++
++        inputs = [dobot_policy.DobotInputs(model_type=model_config.model_type)]
++        if self.recap:
++            inputs.append(dobot_policy.AdvantagePrompt(dropout=self.recap_dropout))
++        data_transforms = _transforms.Group(inputs=inputs, outputs=[dobot_policy.DobotOutputs()])
++
++        delta_action_mask = _transforms.make_bool_mask(6, -1)
++        data_transforms = data_transforms.push(
++            inputs=[_transforms.DeltaActions(delta_action_mask)],
++            outputs=[_transforms.AbsoluteActions(delta_action_mask)],
++        )
++        model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
++        return dataclasses.replace(
++            self.create_base_config(assets_dirs, model_config),
++            repack_transforms=repack_transform,
++            data_transforms=data_transforms,
++            model_transforms=model_transforms,
++        )
++
++
+ @dataclasses.dataclass(frozen=True)
+ class RLDSDroidDataConfig(DataConfigFactory):
+     """
+@@ -762,6 +805,87 @@ _CONFIGS = [
+         num_train_steps=30_000,
+     ),
+     #
++    # 越疆 CR5AF 插头插拔（dobot_plug 工程）。15Hz 控制，action_horizon=15 ≈ 1 秒。
++    # 数据集 repo_id 与 dobot_plug/scripts/convert_to_lerobot.py 的 --repo-id 一致（本地数据集即可，无需上传 Hub）。
++    #
++    # 阶段 1：SFT（全量微调，需 >70GB 显存，A100/H100 80G）
++    TrainConfig(
++        name="pi05_dobot_plug",
++        model=pi0_config.Pi0Config(pi05=True, action_horizon=15),
++        data=LeRobotDobotDataConfig(
++            repo_id="local/dobot_plug_sft",
++            base_config=DataConfig(prompt_from_task=True),
++        ),
++        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
++        num_train_steps=30_000,
++        batch_size=32,
++        save_interval=2_000,
++        keep_period=10_000,
++    ),
++    # 阶段 1：SFT（LoRA，单卡 24GB 如 RTX 4090 可跑，必要时 --batch-size 16）
++    TrainConfig(
++        name="pi05_dobot_plug_lora",
++        model=pi0_config.Pi0Config(
++            pi05=True, action_horizon=15, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
++        ),
++        data=LeRobotDobotDataConfig(
++            repo_id="local/dobot_plug_sft",
++            base_config=DataConfig(prompt_from_task=True),
++        ),
++        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
++        num_train_steps=30_000,
++        batch_size=32,
++        save_interval=2_000,
++        keep_period=10_000,
++        freeze_filter=pi0_config.Pi0Config(
++            pi05=True, action_horizon=15, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
++        ).get_freeze_filter(),
++        ema_decay=None,
++    ),
++    # 阶段 2：RECAP 优势条件化微调（从阶段 1 的 checkpoint 继续训练）
++    # 训练前设置环境变量 DOBOT_RECAP_INIT=<阶段1 checkpoint>/params ，例如
++    #   checkpoints/pi05_dobot_plug/sft_v1/29999/params
++    TrainConfig(
++        name="pi05_dobot_plug_recap",
++        model=pi0_config.Pi0Config(pi05=True, action_horizon=15),
++        data=LeRobotDobotDataConfig(
++            repo_id="local/dobot_plug_recap",
++            base_config=DataConfig(prompt_from_task=True),
++            recap=True,
++        ),
++        weight_loader=weight_loaders.CheckpointWeightLoader(
++            os.environ.get("DOBOT_RECAP_INIT", "gs://openpi-assets/checkpoints/pi05_base/params")
++        ),
++        num_train_steps=10_000,
++        batch_size=32,
++        lr_schedule=_optimizer.CosineDecaySchedule(warmup_steps=500, peak_lr=1e-5, decay_steps=10_000, decay_lr=1e-6),
++        save_interval=1_000,
++        keep_period=5_000,
++    ),
++    TrainConfig(
++        name="pi05_dobot_plug_recap_lora",
++        model=pi0_config.Pi0Config(
++            pi05=True, action_horizon=15, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
++        ),
++        data=LeRobotDobotDataConfig(
++            repo_id="local/dobot_plug_recap",
++            base_config=DataConfig(prompt_from_task=True),
++            recap=True,
++        ),
++        weight_loader=weight_loaders.CheckpointWeightLoader(
++            os.environ.get("DOBOT_RECAP_INIT", "gs://openpi-assets/checkpoints/pi05_base/params")
++        ),
++        num_train_steps=10_000,
++        batch_size=32,
++        lr_schedule=_optimizer.CosineDecaySchedule(warmup_steps=500, peak_lr=1e-5, decay_steps=10_000, decay_lr=1e-6),
++        save_interval=1_000,
++        keep_period=5_000,
++        freeze_filter=pi0_config.Pi0Config(
++            pi05=True, action_horizon=15, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
++        ).get_freeze_filter(),
++        ema_decay=None,
++    ),
++    #
+     # Fine-tuning Aloha configs.
+     #
+     # This is a test config that is used to illustate how train on a custom LeRobot dataset.

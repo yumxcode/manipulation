@@ -1,0 +1,87 @@
+# =============================================================================
+# CR5AF + RealSense D435i + 插头插拔  硬件/任务配置
+# 所有脚本通过 --config 读取本文件（默认 configs/hardware.yaml）
+# =============================================================================
+
+robot:
+  ip: 192.168.5.1              # CR5AF（V4 控制器）默认 LAN1 地址；电脑网卡需设到同网段
+  payload_kg: 1.0              # 夹爪 + 插头总重，务必按实际填写，否则力传感器/碰撞检测会偏
+  payload_center_mm: [0, 0, 60]
+  speed_factor: 30             # 全局速度比例（只影响 MovJ/MovL，回零位时用）
+  # --- ServoJ 流式控制（官方建议 ~33Hz 调用）---
+  servo_hz: 30
+  servo_t: 0.1                 # ServoJ 的 t 参数，越大越平滑但越滞后
+  servo_aheadtime: 50
+  servo_gain: 500
+  max_joint_vel_deg_s: 40      # 软件层关节速度上限（对每个 servo 周期的指令增量限幅）
+  # --- 坐标约定 ---
+  # 越疆欧拉角：绕固定轴 X->Y->Z 依次旋转 = scipy 的 "xyz"（小写=外旋/固定轴）
+  euler_seq: xyz
+  # --- 力传感器（CR5AF 末端六维力）---
+  ft_source: actual_tcp_force  # actual_tcp_force（TCP 系，六维力计算）| six_force_value（传感器原始）
+  zero_ft_on_start: true       # 启动时在无接触状态下 SixForceHome() 清零
+  # --- 安全 ---
+  max_force_n: 45              # 任一方向合力超过即“保护停”（保持当前位置，等待人工处理）
+  max_torque_nm: 4.0
+  workspace_mm:                # TCP 在基座系下允许的范围，超出即保护停
+    x: [150, 750]
+    y: [-450, 450]
+    z: [20, 600]
+  # 回零位（关节角，度）。先运行 scripts/check_hardware.py 把机械臂摆到合适初始姿态，
+  # 复制打印出的关节角填到这里。为 null 时 'h' 键回零功能不可用。
+  home_joints_deg: null
+
+cameras:
+  # 名字 -> 设备序列号 + 送入 π0.5 的图像槽位
+  # π0.5 固定三个图像槽：base_0_rgb / left_wrist_0_rgb / right_wrist_0_rgb
+  # 单臂时：主视角放 base，腕部放 left_wrist，第二个第三人称视角借用 right_wrist 槽位
+  # 序列号用 `rs-enumerate-devices -s` 或 scripts/check_hardware.py 查看
+  devices:
+    base:  {serial: "000000000001", slot: base_0_rgb}
+    wrist: {serial: "000000000002", slot: left_wrist_0_rgb}
+    side:  {serial: "000000000003", slot: right_wrist_0_rgb}
+  capture: {width: 640, height: 480, fps: 30}
+  save:    {width: 320, height: 240}   # 存盘/送模型的分辨率（openpi 内部再 pad 到 224x224）
+  jpeg_quality: 92
+
+gripper:
+  # dh_modbus : 大寰 AG/PGE 系列，电脑 USB-RS485 直连夹爪（推荐，可读位置）
+  # tool_do   : 末端 IO 控制的气动/开关型夹爪（只能开/合，无位置反馈）
+  # none      : 不接夹爪（调试用）
+  type: dh_modbus
+  port: /dev/ttyUSB0
+  baudrate: 115200
+  slave_id: 1
+  force_pct: 60                # 20~100
+  speed_pct: 60                # 1~100
+  # 夹爪开口度映射：模型里 0=全开，1=全闭
+  tool_do_index: 1
+  tool_do_close_level: 1
+
+teleop:
+  device: spacemouse           # 3D 鼠标（pip install pyspacemouse）
+  max_lin_vel_mm_s: 60
+  max_rot_vel_deg_s: 30
+  fine_scale: 0.25             # 按住精细模式键时的速度倍率（插入最后几毫米用）
+  deadzone: 0.08
+  # 3D 鼠标轴 (x,y,z,roll,pitch,yaw) -> 机器人 (x,y,z,rx,ry,rz) 的映射与符号
+  # 先用 check_hardware.py --teleop-test 确认方向，不对就改这里
+  axis_map: [0, 1, 2, 3, 4, 5]
+  axis_sign: [1, 1, 1, 1, 1, 1]
+  rot_frame: tool              # tool：绕 TCP 自身轴旋转（推荐）| base：绕基座轴
+  trans_frame: base            # base | tool
+  gripper_button: 0            # 左键：夹爪开/合切换
+  fine_button: 1               # 右键：按住进入精细模式
+  takeover_threshold: 0.25     # 策略执行时，3D 鼠标推动超过该值自动触发人工接管
+
+task:
+  fps: 15                      # 采集/控制频率；与训练配置的 action_horizon=15 对应约 1 秒
+  prompts:
+    insert: "insert the plug into the socket"
+    unplug: "unplug the plug from the socket"
+  max_episode_s: 60
+  # RECAP 回报归一化：失败惩罚步数（默认 = 最长回合步数）
+  fail_penalty_steps: null
+
+data:
+  raw_dir: data/raw            # 原始回合（jpg + npz），所有后续数据集都从这里生成

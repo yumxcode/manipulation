@@ -1,0 +1,8 @@
+# RECAP 价值模型（GPU 机器）。可以直接装进 openpi 的 uv 环境：
+#   cd <openpi> && uv pip install torchvision
+torch
+torchvision
+numpy
+scipy
+pyyaml
+pillow
